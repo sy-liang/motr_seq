@@ -110,15 +110,13 @@ def train_one_epoch_mot(model: torch.nn.Module, criterion: torch.nn.Module,
         # 编写input sequence，按帧编写
         gt_instances = data_dict['gt_instances']
         bins = 2000
-        max_box = max([len(gt_instance.boxes) for gt_instance in gt_instances])
-        num_box = max(max_box + 2, 100)
         input_seqs = []
-        start = 4001
-        end = 4000
-        label = 0
+        start = 4000
+        end = 4001
         id_gt_past = []
         input_seqs = []
-        no_know = 3999
+        label_true = 4002
+        label_false = 4003
         for index, gt_instance in enumerate(gt_instances):
             # print(f"index={index}")
             # 每一帧
@@ -127,124 +125,52 @@ def train_one_epoch_mot(model: torch.nn.Module, criterion: torch.nn.Module,
             box_gt = torch.clamp(box_gt, min=-0.5, max=1.5)
             id_gt = gt_instance.obj_ids.long()
             label_gt = gt_instance.labels.long()
-            label_gt += label
+            label_gt += label_true
 
             # detect query随机初始化
             # 随机
-            # print(f"box_gt={box_gt}")
-            box = ((box_gt + 0.5) * (bins - 1)).long()
-            # print(f"box={box}")
-            # print(box.shape)
-            # print(label_gt.shape)
-            # print(id_gt.shape)
+            box = ((box_gt + 0.5) * bins).long()
             box_label = torch.cat([box, label_gt.unsqueeze(-1), id_gt.unsqueeze(-1)], dim=-1)
             idx = torch.randperm(box_label.shape[0])
             box_label = box_label[idx]
-            # print(id_gt)
-            # print(f"box_label={box_label}")
-            # print(box_label)
 
-            #####测试新物体加入#####
-            # if index == 2:
-            #    input_seq_box = torch.rand(1, 4).to(box_gt)
-            #    input_seq_box = (input_seq_box * (bins - 1)).long()
-            #    input_seq_past = torch.cat(
-            #      [input_seq_box,  torch.full((1, 1), no_know).to(input_seq_box), torch.full((1, 1), -1).to(input_seq_box)], dim=-1)
-            #    box_label = torch.cat([box_label, input_seq_past], dim=0)
-            #    input_seq_box = torch.rand(1, 4).to(box_gt)
-            #    input_seq_box = (input_seq_box * (bins - 1)).long()
-            #    input_seq_past = torch.cat(
-            #      [input_seq_box,  torch.full((1, 1), 1).to(input_seq_box), torch.full((1, 1), -1).to(input_seq_box)], dim=-1)
-            #    box_label = torch.cat([box_label, input_seq_past], dim=0)
-            # print(box_label)
-            #####测试旧物体消失#####
-            # if index == 1:
-            #    print("begin test")
-            #    box_label = box_label[:-1]
-            #    print(box_label)
-
-            input_seq = []
             full_track_idxes = torch.arange(len(box_label), dtype=torch.long)
             if index != 0:
                 input_seq = torch.zeros(len(id_gt_past), 6, dtype=torch.int).to(box_label)
-                # print(input_seq.shape)
                 # 后续帧按照上一帧的检出顺序
-                # print(f"id_gt_past={id_gt_past}")
-                # print(f"id_gt={id_gt}")
-                # print(box_label[:, -1])
-                # print(id_gt_past[0])
-                # print(list(box_label[:, -1]).index(id_gt_past[0]))
                 for i in range(len(id_gt_past)):
                     id_last = id_gt_past[i]
-                    # print(id_last)
-                    # print(box_label[:, -1])
+                    input_seq_past = []
                     if id_last in box_label[:, -1]:
-                        # print("True")
                         idx = list(box_label[:, -1]).index(id_last)
-                        # print(idx)
                         input_seq_past = box_label[idx]
-                        # print(input_seq_past)
-                        # box_label[idx, -1] = -1 # 已进入input_seq
                         full_track_idxes[idx] = -1
-                        # print(input_seq_past)
                     else:
-                        # print("now")
-                        input_seq_box = torch.rand(1, 4).to(box_gt)
-                        input_seq_box = torch.clamp(input_seq_box, min=-0.5, max=1.5)
-                        input_seq_box = ((input_seq_box + 0.5) * (bins - 1)).long()
-                        input_seq_label = torch.full((1, 1), no_know).to(label_gt)
-                        input_seq_past = torch.cat(
-                            [input_seq_box, input_seq_label, torch.full((1, 1), -1).to(input_seq_box)], dim=-1)
-                        input_seq_past = input_seq_past.squeeze(0)
+                        label_box_last = input_seqs[-1].clone()
+                        input_seq_box = label_box_last[i].unsqueeze(0)  # 1, 6
+                        input_seq_box[:, -2] = label_false
+                        input_seq_box[:, -1] = -1
+                        input_seq_past = input_seq_box
                     # 上一帧出现过的按照顺序检出排序
                     # print(input_seq_past)
                     input_seq[i] = input_seq_past
-                # print(id_gt_past)
-                # print(box_label[:, -1])
-                # print(f"input_seq={input_seq}")
-                # input_seq = torch.stack(input_seq)
-                # print(input_seq)
-                # print(i)
-                # print(input_seq)
+
                 # 这一帧新出现的放后面
-                # print(input_seq)
                 unmatched_track_idxes = full_track_idxes[full_track_idxes != -1]
-                # print(len(unmatched_track_idxes))
+
                 if len(unmatched_track_idxes) > 0:
                     input_seq_new = box_label[unmatched_track_idxes.to(box_label).type(torch.long)]
                     input_seq = torch.cat([input_seq.to(box_label), input_seq_new], dim=0)
             else:
                 input_seq = box_label
-            # print(f"input_seq={input_seq}")
-            # print(index)
-            # print(input_seq)
-
-            # random_box = torch.rand(num_box - input_seq.shape[0], 4).to(box_gt)
-            # random_box = (random_box * (bins - 1)).int()
-            # random_label = torch.randint(0, 91, (num_box - input_seq.shape[0], 1)).to(label_gt)
-            # random_label = random_label + category_start
-            # random_box_label = torch.cat([random_box, random_label, torch.full((num_box - input_seq.shape[0], 1), -1)], dim=-1)
-
-            # input_seq_det = torch.cat([input_seq, random_box_label], dim=0)
-            # input_seq_det = torch.cat([torch.ones(1).to(input_seq) * start, input_seq_det.flatten()])
-            # input_seqs_det.append(input_seq_det.unsqueeze(0))
 
             id_gt_past = input_seq[:, -1]
-            # if index == 0:
-            # 在第一帧前添加start
-            #    input_seq = torch.cat([torch.ones(1).to(input_seq) * start, input_seq.flatten()], dim=-1)
-            # 每一帧后添加end
-            # input_seq = torch.cat([input_seq.flatten(),
-            #                       torch.ones(1).to(input_seq) * end], dim=-1)
-            # print(input_seq)
             input_seqs.append(input_seq)
+            # print(f"input_seq={input_seq}")
 
-            # print(f"input_seqs={input_seqs}")
         outputs = model(data_dict, input_seqs)
-        input_seqs = []
 
         loss_dict = criterion(outputs, data_dict)
-        # print("iter {} after model".format(cnt-1))
         weight_dict = criterion.weight_dict
         losses = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
 

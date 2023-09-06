@@ -1,29 +1,23 @@
-# ------------------------------------------------------------------------
-# Copyright (c) 2021 megvii-model. All Rights Reserved.
-# ------------------------------------------------------------------------
-# Modified from Deformable DETR (https://github.com/fundamentalvision/Deformable-DETR)
-# Copyright (c) 2020 SenseTime. All Rights Reserved.
-# ------------------------------------------------------------------------
-# Modified from DETR (https://github.com/facebookresearch/detr)
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
-# ------------------------------------------------------------------------
+"""
+DETR Transformer class.
 
-
+Copy-paste from torch.nn.Transformer with modifications:
+    * positional encodings are passed in MHattention
+    * extra LN at the end of encoder is removed
+    * decoder returns a stack of activations from all decoding layers
+"""
 import copy
 from typing import Optional, List
-import math
-import random
 
 import torch
 import torch.nn.functional as F
 from torch import nn, Tensor
-from torch.nn.init import xavier_uniform_, constant_, uniform_, normal_
+import pdb
+import torch.nn as nn
+from itertools import repeat
 
-from models.structures import Boxes, matched_boxlist_iou, pairwise_iou
 
-from util.misc import inverse_sigmoid
-from util.box_ops import box_cxcywh_to_xyxy
-from models.ops.modules import MSDeformAttn
 
 
 class DecoderEmbeddings(nn.Module):
@@ -58,27 +52,14 @@ class DecoderEmbeddings(nn.Module):
         return embeddings
 
 
-class DeformableTransformer(nn.Module):
+class Transformer(nn.Module):
+
     def __init__(self, d_model=512, nhead=8, num_encoder_layers=6,
                  num_decoder_layers=6, dim_feedforward=2048, dropout=0.1,
                  activation="relu", normalize_before=False,
                  return_intermediate_dec=False):
         super().__init__()
-
-        self.new_frame_adaptor = None
-        self.d_model = d_model
-        self.nhead = nhead
-
-        # self.vocab_embedding = nn.Embedding(3002, d_model, padding_idx=3000)
-        self.start = 4000
-        self.end = 4001
-        self.bins = 2000
-        self.ranges = 2
-        self.embedding = DecoderEmbeddings(self.bins * self.ranges + 4, d_model, self.bins * self.ranges, 501, dropout)
-        self.temporal_position_embeddings = nn.Embedding(5, d_model)  # 历史帧
-        self.spatio_position_embeddings = nn.Embedding(200, d_model)  # 身份位置编码
-        self.object_position_embeddings = nn.Embedding(5, d_model)  # 内部位置编码
-        self.query_embeddings = nn.Embedding(1, d_model)  # ref位置编码
+        self.embedding = DecoderEmbeddings(2003, d_model, 2000, 501, dropout)
         encoder_layer = TransformerEncoderLayer(d_model, nhead, dim_feedforward,
                                                 dropout, activation, normalize_before)
         encoder_norm = nn.LayerNorm(d_model) if normalize_before else None
@@ -91,7 +72,7 @@ class DeformableTransformer(nn.Module):
                                           return_intermediate=return_intermediate_dec)
 
         self._reset_parameters()
-        #        self.token_drop = SpatialDropout(drop=0.5)
+#        self.token_drop = SpatialDropout(drop=0.5)
         self.d_model = d_model
         self.nhead = nhead
 
@@ -100,112 +81,48 @@ class DeformableTransformer(nn.Module):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
-    def forward(self, src, mask, query_embed, pos_embed, seq, vocab_embed, frame_index):
-
+    def forward(self, src, mask, query_embed, pos_embed, seq, vocab_embed):
         # flatten NxCxHxW to HWxNxC
         bs, c, h, w = src.shape
         src = src.flatten(2).permute(2, 0, 1)
         pos_embed = pos_embed.flatten(2).permute(2, 0, 1)
         mask = mask.flatten(1)
-
-        #        tgt = self.token_drop(self.embedding(seq), noise_shape=(bs, 501, 1)).permute(1, 0, 2)
+        tgt = self.embedding(seq).permute(1, 0, 2)
+#        tgt = self.token_drop(self.embedding(seq), noise_shape=(bs, 501, 1)).permute(1, 0, 2)
+        query_embed = self.embedding.position_embeddings.weight.unsqueeze(1)
+        query_embed = query_embed.repeat(1, bs, 1)
         memory = self.encoder(src, src_key_padding_mask=mask, pos=pos_embed.half())
 
-        # prepare input for decoder
-        device = memory.device
-        # 对seq处理, 添加位置编码
-        # 推理的时候seq为4,n,5+L(当前输出)
-        # print(frame_index)
-        list_id = random.sample(range(0, 199), 199)
-        N = []
-        input_seqs = torch.tensor([])
-        mask_seqs = torch.tensor([])
-        pos_seqs = torch.tensor([])
-        ref_pts = torch.tensor([])  # L, 4
         if self.training:
-            for i in range(frame_index + 1):
-                # 去掉id
-                seq_frame = seq[i]
-                # print(seq)
-                # print(seq_frame.shape)
-                input_seq = seq_frame[:, :-1]  # N, 5
-                device = input_seq.device
+           hs = self.decoder(tgt, memory, memory_key_padding_mask=mask,
+                          pos=pos_embed, query_pos=query_embed[:len(tgt)],
+                          tgt_mask=generate_square_subsequent_mask(len(tgt)).to(tgt.device))
+           return hs.transpose(1, 2)
+        else:
+           values = []
+           cls_pos = [(i + 1) * 5 - 1 for i in range(100)]
+           box_pos = [i for i in range(500) if i not in cls_pos]
+           for i in range(500):
 
-                id = seq_frame[:, -1]  # N,1
-                # 添加身份编码（同一个id拥有同一个编码）  x y w h label都加一个相同的id_pos
-                id_pos = self.spatio_position_embeddings.weight[list_id[:len(id)]].clone().unsqueeze(1)  # N, D
-                id_pos = id_pos.repeat(1, 5, 1)  # N, 5, D
-
-                # 添加时序编码，每一帧的所有物体都加一个相同的time_pos
-                time_pos = self.temporal_position_embeddings.weight.clone().unsqueeze(1)  # f, 1, D
-                time_pos_frame = time_pos[i]  # 第i帧的时序位置, 1, 1, D
-                time_pos_frame = time_pos_frame.repeat(len(input_seq), 5, 1)  # N, 5, D
-
-                # 添加内部位置编码，x y w h label
-                object_pos = self.object_position_embeddings.weight.clone().unsqueeze(0)  # 1, 5, D
-                object_pos = object_pos.repeat(len(input_seq), 1, 1)  # N, 5, D
-
-                # 添加start和end, 编写位置编码（总），start和end无位置编码，用0取代
-                # 预测当前帧开始和最后有end
-                # 记录每一帧物体数量
-                N.append(len(seq_frame) * 5)
-                input_seq = input_seq.flatten()
-                pos_seq = (id_pos + time_pos_frame + object_pos).flatten(0, 1)  # N,5,D
-                if i == frame_index:
-                    # 1+N*5
-                    input_seq = torch.cat([torch.ones(1).to(input_seq) * self.start, input_seq], dim=-1)
-                    # 1+N*5, D
-                    pos_seq = torch.cat([torch.zeros((1, self.d_model)).to(pos_seq), pos_seq], dim=0)
-                    N[-1] += 1
-                input_seqs = torch.cat([input_seqs.to(input_seq), input_seq], dim=-1)  # L, 1
-                pos_seqs = torch.cat([pos_seqs.to(pos_seq), pos_seq], dim=0)  # L, 1, D
-
-                # 编写每一帧的mask：暂定均为下三角
-                # 根据每一帧的物体数量编写（不含start和end）
-                # mask_seq = generate_square_subsequent_mask(len(input_seqs))
-                mask_seq = torch.tensor([]).to(pos_seqs)
-                if i == 0:
-                    mask_seq = generate_square_subsequent_mask(N[0])
-                    mask_seqs = torch.cat([mask_seqs, mask_seq], dim=-1)
-                else:
-                    for n in N:
-                        n_now = N[-1]
-                        # print(n_now)
-                        # print(N)
-                        mask_seq_n = torch.full((n_now, n), float('-inf'), dtype=torch.float).to(pos_seqs)
-                        if n >= n_now:
-                            mask_seq_n[:, :n_now] = generate_square_subsequent_mask(n_now)
-                        else:
-                            # print(n)
-                            mask_seq_n[:n, :n] = generate_square_subsequent_mask(n)
-                            mask_seq_n[n:, :] = 0.
-                        mask_seq = torch.cat([mask_seq, mask_seq_n], dim=-1)
-                    n1 = len(mask_seqs)
-                    n2 = len(mask_seq)
-                    # print(n1, n2)
-                    mask_seqs = torch.cat(
-                        [mask_seqs.to(pos_seqs), torch.full((n1, n2), float('-inf'), dtype=torch.float).to(pos_seqs)],
-                        dim=-1)
-                    # print(mask_seqs.shape, mask_seq.shape)
-                    # print(f"mask_seq={mask_seq.shape}")
-                    # print(f"mask_seqs={mask_seqs.shape}")
-                    mask_seqs = torch.cat([mask_seqs.to(pos_seqs), mask_seq], dim=0)
-                    # print(mask_seq)
-            mask_seqs = mask_seqs.to(pos_seqs)
-            N = len(seq_frame) * 5
-
-            # decoder
-            input_seqs = input_seqs.unsqueeze(-1)
-            input_seqs = input_seqs.repeat(1, bs)  # L, bs
-            tgt = self.embedding(input_seqs)
-            pos_seqs = pos_seqs.unsqueeze(1)  # N, 1, D
-            # print(input_seqs.shape)
-            pos_seqs = pos_seqs.repeat(1, bs, 1)  # L, bs, D
-            if self.training:
-                hs = self.decoder(tgt, memory, memory_key_padding_mask=mask,
-                                  pos=pos_embed, query_pos=pos_seqs[:len(tgt)],
-                                  tgt_mask=mask_seqs.to(tgt.device))
-                return hs.transpose(1, 2)
+               tgt = self.embedding(seq).permute(1, 0, 2)
+               query_embed = self.embedding.position_embeddings.weight.unsqueeze(1)
+               query_embed = query_embed.repeat(1, bs, 1)
+               hs = self.decoder(tgt, memory, memory_key_padding_mask=mask,
+                          pos=pos_embed, query_pos=query_embed[:len(tgt)],
+                          tgt_mask=generate_square_subsequent_mask(len(tgt)).to(tgt.device))
+               out = vocab_embed(hs.transpose(1, 2)[-1, :, -1, :])
+               out = out.softmax(-1)
+               out = out[:, :1997]
+               if i in box_pos:
+#                  pdb.set_trace()
+                  out = out[:, :1000]
+#               if i in [0, 1, 2, 3]:
+#                   out = out[:, :1000]
+               value, extra_seq = out.topk(dim=-1, k=1)[0], out.topk(dim=-1, k=1)[1]
+               seq = torch.cat([seq, extra_seq], dim=-1)
+               values.append(value)
+#           seq[:, -1] = 2000
+           return seq, torch.cat(values, dim=-1)
 
 
 
@@ -432,8 +349,8 @@ def _get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
 
 
-def build_deforamble_transformer_seq(args):
-    return DeformableTransformer(
+def build_transformer(args):
+    return Transformer(
         d_model=args.hidden_dim,
         dropout=args.dropout,
         nhead=args.nheads,
