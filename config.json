@@ -1,0 +1,107 @@
+{
+    "dataset": {
+        "batch_duplicates": 1,
+        "cache_dataset": true,
+        "coco_annotations_dir": "",
+        "eval_split": "validation",
+        "label_shift": 0,
+        "name": "coco/2017",
+        "train_split": "train"
+    },
+    "eval": {
+        "batch_size": 8,
+        "checkpoint_dir": null,
+        "steps": null,
+        "tag": "eval"
+    },
+    "model": {
+        "coord_vocab_shift": 1000,
+        "dec_proj_mode": "mlp",
+        "decoder_output_bias": true,
+        "dim_att": 256,
+        "dim_att_dec": 256,
+        "dim_mlp": 1024,
+        "dim_mlp_dec": 1024,
+        "drop_att": 0,
+        "drop_path": 0.1,
+        "drop_units": 0.1,
+        "image_size": (640, 640)
+        "max_seq_len": 512,
+        "num_decoder_layers": 6,
+        "num_encoder_layers": 6,
+        "num_heads": 8,
+        "num_heads_dec": 8,
+        "patch_size": 16,
+        "pos_encoding": "sin_cos",
+        "pos_encoding_dec": "learned",
+        "pretrained_ckpt": "",
+        "resnet_depth": 50,
+        "resnet_sk_ratio": 0,
+        "resnet_variant": "standard",
+        "resnet_width_multiplier": 1,
+        "shared_decoder_embedding": true,
+        "text_vocab_shift": 3000,
+        "use_cls_token": false,
+        "vocab_size": 3000
+    },
+    "optimization": {
+        "beta1": 0.9,
+        "beta2": 0.95,
+        "end_lr_factor": 0.01,
+        "eps": 1e-8,
+        "global_clipnorm": -1,
+        "learning_rate": 0.0001,
+        "learning_rate_scaling": null,
+        "learning_rate_schedule": "linear",
+        "optimizer": "adamw",
+        "warmup_epochs": 10,
+        "warmup_steps": null,
+        "weight_decay": 0.05
+    },
+    "task": {
+        "class_label_corruption": "rand_n_fake_cls",
+        "color_jitter_strength": 0,
+        "custom_sampling": false,
+        "eos_token_weight": 0.1,
+        "image_size": 640,
+        "jitter_scale_max": 2,
+        "jitter_scale_min": 0.3,
+        "max_instances_per_image": 100,
+        "name": "object_detection",
+        "noise_bbox_weight": 1,
+        "object_order": "random",
+        "quantization_bins": 1000,
+        "temperature": 1,
+        "top_k": 0,
+        "top_p": 0.4
+    },
+    "tasks": [
+        {
+            "class_label_corruption": "rand_n_fake_cls",
+            "color_jitter_strength": 0,
+            "custom_sampling": false,
+            "eos_token_weight": 0.1,
+            "image_size": 640,
+            "jitter_scale_max": 2,
+            "jitter_scale_min": 0.3,
+            "max_instances_per_image": 100,
+            "name": "object_detection",
+            "noise_bbox_weight": 1,
+            "object_order": "random",
+            "quantization_bins": 1000,
+            "temperature": 1,
+            "top_k": 0,
+            "top_p": 0.4
+        }
+    ],
+    "train": {
+        "batch_size": 128,
+        "checkpoint_epochs": 1,
+        "checkpoint_steps": null,
+        "epochs": 80,
+        "keep_checkpoint_max": 5,
+        "loss_type": "xent",
+        "steps": null,
+        "warmup_epochs": 2
+    }
+}
